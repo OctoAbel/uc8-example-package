@@ -1,0 +1,184 @@
+pipeline {
+
+
+   agent {label 'azubl00013'}
+    environment {
+	  GITREPO      		        = "/var/lib/jenkins/workspace/${env.JOB_NAME}"
+	  GITREPOREMOTE   	        = "https://github.com/DIGITAL-FAB/DatabricksTemplateDev.git"
+	  GITHUBCREDID    	        = credentials('evergata_github')
+	  CURRENTRELEASE            = "library_build_test_example_1"
+	  DBTOKEN                   = credentials('DBTOKEN')
+	  DBURL          	        = credentials('DBURL')
+	  SCRIPTPATH      	        = "Automation/Deployments"
+	  NOTEBOOKPATH    	        = "${GITREPO}/Workspace"
+	  LIBRARYPATH        	    = "${GITREPO}/Libraries"
+	  BUILDPATH       	        = "${GITREPO}/Builds/${env.JOB_NAME}-${env.BUILD_NUMBER}"
+	  OUTFILEPATH     	        = "${BUILDPATH}/Validation/Output"
+	  TESTRESULTPATH  	        = "${BUILDPATH}/Validation/reports/junit"
+	  WORKSPACEPATH             = "/Users/enrico.vergata@st.com"
+	  DBFSPATH           	    = "dbfs:/jenkins/"
+	  CLUSTERID         	    = "1123-144230-inky954"
+	  CONDAPATH       	        = "/usr/opt/anaconda3"
+	  CONDAENV        	        = "dbconnect"
+	  HTTP_PROXY      	        = credentials('DBRICKS_HTTP_PROXY')
+	  HTTPS_PROXY     	        = credentials('DBRICKS_HTTPS_PROXY')
+	  NO_PROXY        	        = credentials('DBRICKS_NO_PROXY')
+    }  
+   stages {
+      stage('Setup') {
+	  steps {
+	      withCredentials([string(credentialsId: "DBTOKEN", variable: 'TOKEN')]) {
+		sh """#!/bin/bash
+		    # Configure Conda environment for deployment & testing
+		    source ${CONDAPATH}/bin/activate ${CONDAENV} 
+
+		    # Configure Databricks CLI for deployment
+		    echo "${DBURL}
+		    $TOKEN" | databricks configure --token
+
+		    # Configure Databricks Connect for testing
+		    echo "${DBURL}
+		    $TOKEN
+		    ${CLUSTERID}
+		    0
+		    15001" | databricks-connect configure
+		   """
+		
+
+                stash includes: '**/*', name: 'library_build_test_databricks_dev', excludes: '**/.git/**'
+		
+                milestone 1
+         }
+        }
+       }
+      stage('Checkout') { // for display purposes
+            steps {
+                script {
+                    currentBuild.displayName = "Build ${ENV:BUILD_NUMBER}"
+                    currentBuild.description = "Build ${ENV:BUILD_NUMBER}, for commit ${ENV:GIT_COMMIT}"
+                }
+
+                checkout scm
+                echo 'Checking out repo...'
+               
+		milestone 2
+            }
+      }
+    stage('Run Unit Tests') {
+	  steps {
+	     script {
+		  try {
+		      sh """#!/bin/bash
+			 # Enable Conda environment for tests
+			 source ${CONDAPATH}/bin/activate ${CONDAENV}
+
+			 # Python tests for libs
+			 python3 -m pytest --junit-xml=${TESTRESULTPATH}/TEST-libout.xml ${LIBRARYPATH}/python/dbxdemo/test*.py || true
+			 """
+		  } catch(err) {
+		    step([$class: 'JUnitResultArchiver', testResults: '--junit-xml=${TESTRESULTPATH}/TEST-*.xml'])
+		    if (currentBuild.result == 'UNSTABLE')
+		      currentBuild.result = 'FAILURE'
+		    throw err
+		  }
+	     }
+	     unstash 'library_build_test_databricks_dev'
+		  
+             milestone 3
+	}
+      }
+	stage('Package') {
+	  steps {
+	  sh """#!/bin/bash
+	      # Enable Conda environment for tests
+	      source ${CONDAPATH}/bin/activate ${CONDAENV}
+
+	      # Package Python library to wheel
+	      cd ${LIBRARYPATH}/python/dbxdemo
+	      python3 setup.py sdist bdist_wheel
+	     """
+          stash includes: '**/*', name: 'library_build_deploy_databricks_dev', excludes: '**/.git/**'
+		  
+          milestone 4
+	  }
+	}
+	stage('Build Artifact') {
+	  steps {
+	  sh """
+		mkdir -p ${BUILDPATH}/Libraries/python
+		mkdir -p ${BUILDPATH}/Validation/Output
+		#Get Modified Files
+		git diff --name-only --diff-filter=AMR HEAD^1 HEAD | xargs -I '{}' cp --parents -r '{}' ${BUILDPATH}
+
+		# Get packaged libs
+		find ${LIBRARYPATH} -name '*.whl' | xargs -I '{}' cp '{}' ${BUILDPATH}/Libraries/python/
+		
+		# Generate artifact
+		tar -czvf Builds/latest_build.tar.gz ${BUILDPATH}
+	     """
+	  archiveArtifacts artifacts: 'Builds/latest_build.tar.gz'
+          milestone 5
+	  }
+	}
+	stage('Deploy') {
+	  steps {
+	  sh """#!/bin/bash
+		# Enable Conda environment for tests
+		source ${CONDAPATH}/bin/activate ${CONDAENV}
+
+		echo 'databricks workspace import_dir ${NOTEBOOKPATH} ${WORKSPACEPATH}'
+		
+		# Use Databricks CLI to deploy notebooks
+		databricks workspace import_dir ${NOTEBOOKPATH} ${WORKSPACEPATH}
+		
+		dbfs cp -r ${BUILDPATH}/Libraries/python ${DBFSPATH} --overwrite
+		
+	     """
+		 
+	  withCredentials([string(credentialsId: "DBTOKEN", variable: 'TOKEN')]) {  
+	    sh """#!/bin/bash
+
+		#Get space delimited list of libraries
+		LIBS=\$(find ${BUILDPATH}/Libraries/python/ -name '*.whl' | sed 's#.*/##' | paste -sd " ")
+                
+		#Script to uninstall, reboot if needed & instsall library
+		python3 ${SCRIPTPATH}/installWhlLibrary.py --workspace=${DBURL}\
+			  --token=$TOKEN\
+			  --clusterid=${CLUSTERID}\
+			  --libs=\$LIBS\
+			  --dbfspath=${DBFSPATH}
+	       """
+	  }
+	  milestone 6
+	  }
+	}
+	stage('Run Integration Tests') {
+	  steps {
+	  withCredentials([string(credentialsId: "DBTOKEN", variable: 'TOKEN')]) {
+	      sh """
+	            python3 ${SCRIPTPATH}/executenotebook.py --workspace=${DBURL}\
+			      --token=$TOKEN\
+			      --clusterid=${CLUSTERID}\
+			      --localpath=${NOTEBOOKPATH}/VALIDATION\
+			      --workspacepath=${WORKSPACEPATH}/VALIDATION\
+			      --outfilepath=${OUTFILEPATH}
+		 """
+	  }
+	  sh """sed -i -e 's #ENV# ${OUTFILEPATH} g' ${SCRIPTPATH}/evaluatenotebookruns.py
+		python3 -m pytest --junit-xml=${TESTRESULTPATH}/TEST-notebookout.xml ${SCRIPTPATH}/evaluatenotebookruns.py || true
+	     """
+	  milestone 7
+	  }
+	}
+	stage('Report Test Results') {
+	  steps {
+	  sh """find ${OUTFILEPATH} -name '*.json' -exec gzip --verbose {} \\;
+		touch ${TESTRESULTPATH}/TEST-*.xml
+	     """
+	  junit "**/reports/junit/*.xml"
+          unstash 'library_build_deploy_databricks_dev'
+	  milestone 8
+	  }
+	}
+   }
+}
