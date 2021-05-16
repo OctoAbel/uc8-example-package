@@ -1,7 +1,7 @@
 pipeline {
 
 
-   agent {label 'azubl00013'}
+   agent any
     environment {
 	  GITREPO      		        = "/var/lib/jenkins/workspace/${env.JOB_NAME}"
 	  GITREPOREMOTE   	        = "https://github.com/DIGITAL-FAB/DatabricksTemplateDev.git"
