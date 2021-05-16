@@ -15,14 +15,11 @@ pipeline {
 	  BUILDPATH       	        = "${GITREPO}/Builds/${env.JOB_NAME}-${env.BUILD_NUMBER}"
 	  OUTFILEPATH     	        = "${BUILDPATH}/Validation/Output"
 	  TESTRESULTPATH  	        = "${BUILDPATH}/Validation/reports/junit"
-	  WORKSPACEPATH             = "/Users/enrico.vergata@st.com"
+	  WORKSPACEPATH             = "/Users/abouammar.elboukhari-ext@st.com"
 	  DBFSPATH           	    = "dbfs:/jenkins/"
-	  CLUSTERID         	    = "1123-144230-inky954"
+	  CLUSTERID         	    = "0505-144317-felon734"
 	  CONDAPATH       	        = "/usr/opt/anaconda3"
 	  CONDAENV        	        = "dbconnect"
-	  HTTP_PROXY      	        = credentials('DBRICKS_HTTP_PROXY')
-	  HTTPS_PROXY     	        = credentials('DBRICKS_HTTPS_PROXY')
-	  NO_PROXY        	        = credentials('DBRICKS_NO_PROXY')
     }  
    stages {
       stage('Setup') {
