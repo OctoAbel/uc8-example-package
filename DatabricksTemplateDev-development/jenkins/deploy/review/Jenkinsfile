@@ -1,0 +1,146 @@
+pipeline {
+
+
+   agent {label 'azubl00013'}
+    environment {
+	  GITREPO      		        = "/var/lib/jenkins/workspace/${env.JOB_NAME}"
+	  GITREPOREMOTE   	        = "https://github.com/DIGITAL-FAB/DatabricksTemplateDev.git"
+	  DBTOKEN                   = credentials('DBTOKEN')
+	  DBURL          	        = credentials('DBURL')
+	  LIBRARYPATH        	    = "${GITREPO}/Libraries"
+	  BUILDPATH       	        = "${GITREPO}/Builds/${env.JOB_NAME}-${env.BUILD_NUMBER}"
+	  TESTRESULTPATH  	        = "${BUILDPATH}/Validation/reports/junit"
+	  CLUSTERID         	    = "0514-114706-parse443"
+	  PYTHON_VENV_PATH	        = "/var/lib/jenkins/penv"
+	  PYTHON_ENV        	    = "dbconnect"
+	  HTTP_PROXY      	        = credentials('DBRICKS_HTTP_PROXY')
+	  HTTPS_PROXY     	        = credentials('DBRICKS_HTTPS_PROXY')
+	  NO_PROXY        	        = credentials('DBRICKS_NO_PROXY')
+	  USERNAME_ARTIFCATORY      = credentials('USERNAME_MDA_ARTIFCATORY')
+	  PWD_ARTIFACTORY           = credentials('PWD_MDA_ARTIFACTORY')
+    }  
+   stages {
+      stage('Setup Databricks tools') {
+	  steps {
+	      withCredentials([string(credentialsId: "DBTOKEN", variable: 'TOKEN')]) {
+		sh """#!/bin/bash
+		    # Configure Python virtual environment for deployment & testing
+		    source ${PYTHON_VENV_PATH}/${PYTHON_ENV}/bin/activate 
+
+		    # Configure Databricks CLI for deployment
+		    echo "${DBURL}
+		    $TOKEN" | databricks configure --token
+
+		    # Configure Databricks Connect for testing
+		    echo "${DBURL}
+		    $TOKEN
+		    ${CLUSTERID}
+			4169468764694708
+		    15001" | databricks-connect configure
+		   """
+		
+
+                stash includes: '**/*', name: 'library_build_test_databricks_dev', excludes: '**/.git/**'
+		
+                milestone 1
+         }
+        }
+       }
+      stage('Setup Python conf') {
+			steps {
+				sh """#!/bin/bash
+			    # Enable Python virtual environment for tests
+			    source ${PYTHON_VENV_PATH}/${PYTHON_ENV}/bin/activate 
+				pip config set global.index-url  https://artifacts.st.com/artifactory/api/pypi/dit-mda-python/simple
+				pip config set global.extra-index-url  https://artifacts.st.com/artifactory/api/pypi/dit-mda-python-local
+				pip config set install.trusted-host  artifacts.st.com
+				"""
+				configFileProvider([configFile(fileId: 'MDA_pypirc', targetLocation: '/var/lib/jenkins/.pypirc')]) {
+				   sh"""
+				   echo 'username:${USERNAME_ARTIFCATORY}' >> /var/lib/jenkins/.pypirc
+				   echo 'password:${PWD_ARTIFACTORY}' >> /var/lib/jenkins/.pypirc
+				   """
+				}
+                milestone 2
+			}
+	  } 
+      stage('Checkout') { // for display purposes
+            steps {
+                script {
+                    currentBuild.displayName = "Build ${ENV:BUILD_NUMBER}"
+                    currentBuild.description = "Build ${ENV:BUILD_NUMBER}, for commit ${ENV:GIT_COMMIT}"
+                }
+
+                checkout scm
+                echo 'Checking out repo...'
+               
+		milestone 3
+            }
+      }
+    stage('Run Unit Tests') {
+	  steps {
+	     script {
+		  try {
+		    sh """#!/bin/bash
+			  mkdir -p ${TESTRESULTPATH}
+			 # Enable Python virtual environment for tests
+			 source ${PYTHON_VENV_PATH}/${PYTHON_ENV}/bin/activate 
+
+			 # Python tests for libs
+			 python3.7 -m pytest --junit-xml=${TESTRESULTPATH}/TEST-libout.xml ${LIBRARYPATH}/python/dbxdemo/test*.py || true
+			 """
+		  } catch(err) {
+		    step([$class: 'JUnitResultArchiver', testResults: '--junit-xml=${TESTRESULTPATH}/TEST-*.xml'])
+		    if (currentBuild.result == 'UNSTABLE')
+		      currentBuild.result = 'FAILURE'
+		    throw err
+		  }
+	     }		  
+             milestone 4
+	  }
+    }
+	stage('Report Test Results') {
+	  steps {
+
+        junit "**/reports/junit/*.xml"
+		sh"""
+			rm -rf /var/lib/jenkins/.pypirc
+			rm -rf /var/lib/jenkins/.config/pip/pip.conf
+		"""
+		script {
+				def summary = junit testResults: "**/reports/junit/*.xml"
+				def totalCount = summary.totalCount.toString()
+				def passCount = summary.passCount.toString()
+				echo totalCount
+				echo passCount
+				
+				if(totalCount == passCount) { 
+					echo 'BUILD STABLE'
+				} else { 
+					echo 'BUILD UNSTABLE: exit'
+				}
+				
+			}
+          unstash 'library_build_test_databricks_dev'
+	  milestone 5
+	  }
+	}
+   }
+
+
+   post {
+        aborted {
+            node('master') {
+                script {
+                    currentBuild.description = "A newer build has caused this to be aborted"
+                }
+            }
+        }
+        cleanup {
+            node('master') {
+                cleanWs(patterns: [[pattern: '**/*', type: 'INCLUDE']])
+            }
+        }
+    }
+	
+}
