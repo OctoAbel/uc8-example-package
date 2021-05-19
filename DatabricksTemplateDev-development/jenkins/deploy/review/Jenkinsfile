@@ -17,7 +17,7 @@ pipeline {
 	  HTTPS_PROXY     	        = credentials('DBRICKS_HTTPS_PROXY')
 	  NO_PROXY        	        = credentials('DBRICKS_NO_PROXY')
 	  USERNAME_ARTIFCATORY      = credentials('USERNAME_MDA_ARTIFCATORY')
-	  PWD_ARTIFACTORY           = credentials('PWD_MDA_ARTIFACTORY')
+	  //PWD_ARTIFACTORY           = credentials('PWD_MDA_ARTIFACTORY')
     }  
    stages {
       stage('Setup Databricks tools') {
